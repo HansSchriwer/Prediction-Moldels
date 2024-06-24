@@ -1,0 +1,119 @@
+# detailed LSTM program for predicting cryptocurrency prices for the next 30 days. This program uses historical price data to train the model.
+Prerequisites
+Ensure you have the following Python libraries installed:
+•	numpy
+•	pandas
+•	matplotlib
+•	scikit-learn
+•	tensorflow
+
+# You can install these packages using:
+pip install numpy pandas matplotlib scikit-learn tensorflow
+Steps:
+1.	Load and preprocess the data.
+2.	Create the LSTM model.
+3.	Train the model.
+4.	Make predictions.
+Step-by-Step Code
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.optimizers import Adam
+
+# Load data
+df = pd.read_csv('cryptocurrency_price_data.csv')  # replace with your dataset file
+
+# Preprocess data
+df['Date'] = pd.to_datetime(df['Date'])
+df.set_index('Date', inplace=True)
+data = df['Close'].values.reshape(-1, 1)
+
+# Normalize the data
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(data)
+
+# Prepare the dataset for the LSTM
+def create_dataset(dataset, look_back=60):
+    X, Y = [], []
+    for i in range(len(dataset) - look_back - 1):
+        X.append(dataset[i:(i + look_back), 0])
+        Y.append(dataset[i + look_back, 0])
+    return np.array(X), np.array(Y)
+
+look_back = 60
+X, Y = create_dataset(scaled_data, look_back)
+X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+
+# Split the data into training and testing sets
+train_size = int(len(X) * 0.8)
+test_size = len(X) - train_size
+X_train, X_test = X[:train_size], X[train_size:]
+Y_train, Y_test = Y[:train_size], Y[train_size:]
+
+# Build the LSTM model
+model = Sequential()
+model.add(LSTM(50, return_sequences=True, input_shape=(look_back, 1)))
+model.add(LSTM(50, return_sequences=False))
+model.add(Dense(25))
+model.add(Dense(1))
+
+# Compile the model
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+
+# Train the model
+model.fit(X_train, Y_train, batch_size=1, epochs=20)
+
+# Make predictions
+train_predict = model.predict(X_train)
+test_predict = model.predict(X_test)
+
+# Invert predictions
+train_predict = scaler.inverse_transform(train_predict)
+test_predict = scaler.inverse_transform(test_predict)
+
+# Plot the results
+train = data[:train_size + look_back]
+valid = data[train_size + look_back:]
+valid['Predictions'] = test_predict
+
+plt.figure(figsize=(16, 8))
+plt.title('Cryptocurrency Price Prediction')
+plt.xlabel('Date')
+plt.ylabel('Price')
+plt.plot(train)
+plt.plot(valid[['Close', 'Predictions']])
+plt.legend(['Train', 'Valid', 'Predictions'], loc='lower right')
+plt.show()
+
+# Predict the next 30 days
+last_60_days = scaled_data[-look_back:]
+next_30_days = []
+
+for _ in range(30):
+    last_60_days_input = np.reshape(last_60_days, (1, look_back, 1))
+    next_day_pred = model.predict(last_60_days_input)
+    next_30_days.append(next_day_pred[0, 0])
+    last_60_days = np.append(last_60_days[1:], next_day_pred, axis=0)
+
+next_30_days = scaler.inverse_transform(np.array(next_30_days).reshape(-1, 1))
+
+# Plot the next 30 days predictions
+plt.figure(figsize=(16, 8))
+plt.title('Cryptocurrency Price Prediction for Next 30 Days')
+plt.xlabel('Days')
+plt.ylabel('Price')
+plt.plot(next_30_days)
+plt.show()
+
+# Explanation:
+1.	Loading Data: The historical cryptocurrency price data is loaded from a CSV file.
+2.	Preprocessing Data: The data is normalized using MinMaxScaler to scale the prices between 0 and 1.
+3.	Creating Dataset: The create_dataset function transforms the time series data into the format required for the LSTM model, using a look_back period.
+4.	Building the Model: A Sequential LSTM model is created with two LSTM layers and two Dense layers.
+5.	Training the Model: The model is trained using the training data.
+6.	Making Predictions: The model's predictions on the training and testing data are plotted.
+7.	Next 30 Days Predictions: The model predicts the next 30 days of prices, which are then plotted.
+This code provides a foundation for cryptocurrency price prediction using LSTM. You can further tune the hyperparameters and improve the model's accuracy.
