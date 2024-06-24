@@ -1,2 +1,2 @@
-# Prediction-Moldels
+# Prediction-Models
 Various Prediction models
