@@ -1,0 +1,119 @@
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from sklearn.preprocessing import StandardScaler
+from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer, Baseline
+from pytorch_forecasting.data import GroupNormalizer
+from pytorch_forecasting.metrics import QuantileLoss
+
+# Load stock data
+ticker = 'AAPL'
+data = yf.download(ticker, start='2010-01-01', end='2023-01-01')
+data['date'] = pd.to_datetime(data.index)
+data['time_idx'] = (data['date'] - data['date'].min()).dt.days
+
+# Calculate additional features
+data['MA10'] = data['Close'].rolling(window=10).mean()
+data['MA50'] = data['Close'].rolling(window=50).mean()
+data['RSI'] = 100 - (100 / (1 + data['Close'].diff().rolling(window=14).mean() / data['Close'].diff().rolling(window=14).std()))
+exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+data['MACD'] = exp1 - exp2
+
+# Drop rows with NaN values
+data.dropna(inplace=True)
+
+# Normalize features
+scaler = StandardScaler()
+data[['Volume', 'MA10', 'MA50', 'RSI', 'MACD']] = scaler.fit_transform(data[['Volume', 'MA10', 'MA50', 'RSI', 'MACD']])
+Fetch Additional Data: If you have access to additional data sources like macroeconomic indicators or sentiment scores, integrate them into your dataset. Here’s an example of how you might add macroeconomic data:
+# Example of adding macroeconomic indicators (use actual sources/APIs in practice)
+# Placeholder data for illustration
+data['GDP'] = np.random.normal(loc=2, scale=0.5, size=len(data))
+data['Inflation'] = np.random.normal(loc=2, scale=0.5, size=len(data))
+data['Unemployment'] = np.random.normal(loc=5, scale=1, size=len(data))
+
+# Normalize additional features
+data[['GDP', 'Inflation', 'Unemployment']] = scaler.fit_transform(data[['GDP', 'Inflation', 'Unemployment']])
+Step 3: Define the TFT Model
+1.	Create the TimeSeriesDataSet:
+max_encoder_length = 60
+max_prediction_length = 30
+
+# Create the TimeSeriesDataSet
+training = TimeSeriesDataSet(
+    data[lambda x: x.time_idx <= x.time_idx.max() - max_prediction_length],
+    time_idx='time_idx',
+    target='Close',
+    group_ids=['date'],  # Use date as a group identifier for this example
+    min_encoder_length=max_encoder_length // 2,
+    max_encoder_length=max_encoder_length,
+    min_prediction_length=1,
+    max_prediction_length=max_prediction_length,
+    static_categoricals=['date'],
+    time_varying_known_reals=['time_idx', 'Volume', 'MA10', 'MA50', 'RSI', 'MACD', 'GDP', 'Inflation', 'Unemployment'],
+    time_varying_unknown_reals=['Close'],
+    target_normalizer=GroupNormalizer(groups=['date'], transformation='softplus')
+)
+
+# Create the validation dataset
+validation = TimeSeriesDataSet.from_dataset(training, data, min_prediction_idx=training.index.time.max() + 1)
+
+# Create dataloaders
+batch_size = 64
+train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=8)
+val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=8)
+Define the TFT Model with Hyperparameter Tuning:
+from pytorch_forecasting import TemporalFusionTransformer, TemporalFusionTransformerModel
+
+# Define the TFT model
+tft = TemporalFusionTransformerModel.from_dataset(
+    training,
+    learning_rate=0.001,
+    hidden_size=64,
+    attention_head_size=4,
+    dropout=0.2,
+    hidden_continuous_size=32,
+    output_size=7,  # Quantile output size
+    loss=QuantileLoss(),
+    log_interval=10,
+    reduce_on_plateau_patience=5,
+    # Additional hyperparameters
+    optimizer="adam",  # Can use other optimizers like 'adamw' or 'ranger'
+    reduce_on_plateau_patience=5,
+    hidden_continuous_size=16,
+    dropout=0.3,
+    max_encoder_length=max_encoder_length,
+    max_prediction_length=max_prediction_length,
+    static_categoricals=['date'],
+    time_varying_known_reals=['time_idx', 'Volume', 'MA10', 'MA50', 'RSI', 'MACD', 'GDP', 'Inflation', 'Unemployment'],
+    time_varying_unknown_reals=['Close'],
+    log_interval=5
+)
+Step 4: Train the Model
+import pytorch_lightning as pl
+
+trainer = pl.Trainer(
+    max_epochs=100,
+    gpus=1,  # set to 0 if no GPU available
+    gradient_clip_val=0.1,
+)
+trainer.fit(tft, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+Step 5: Evaluate and Forecast
+1.	Evaluate the Model:
+best_model_path = trainer.checkpoint_callback.best_model_path
+best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+
+# Predict future stock prices
+actuals = torch.cat([y[0] for x, y in iter(val_dataloader)])
+predictions = best_tft.predict(val_dataloader)
+2.	Visualize the Predictions:
+python
+import matplotlib.pyplot as plt
+
+predictions = predictions.numpy()
+plt.figure(figsize=(10, 6))
+plt.plot(predictions, label='Predicted')
+plt.plot(actuals.numpy(), label='Actual')
+plt.legend()
+plt.show()
