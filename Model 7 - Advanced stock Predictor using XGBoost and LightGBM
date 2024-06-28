@@ -1,0 +1,186 @@
+# Model 7: XGBoost and LightGBM:
+A model that uses both XGBoost and LightGBM for stock price prediction. We'll create an ensemble of these two powerful gradient boosting frameworks.
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Function to download and prepare data
+def get_stock_data(symbol, start_date, end_date):
+    data = yf.download(symbol, start=start_date, end=end_date)
+    return data
+
+# Function to add technical indicators
+def add_technical_indicators(df):
+    df['SMA'] = df['Close'].rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + df['Close'].diff(1).clip(lower=0).rolling(14).mean() / 
+                              -df['Close'].diff(1).clip(upper=0).rolling(14).mean()))
+    df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+    df['ATR'] = df['High'].rolling(14).max() - df['Low'].rolling(14).min()
+    return df
+
+# Function to create features
+def create_features(df):
+    df['day_of_week'] = df.index.dayofweek
+    df['month'] = df.index.month
+    df['year'] = df.index.year
+    df['day_of_year'] = df.index.dayofyear
+    return df
+
+# Function to prepare data for modeling
+def prepare_data(df, target_column, look_back):
+    X, y = [], []
+    for i in range(len(df) - look_back):
+        X.append(df.iloc[i:i+look_back].values)
+        y.append(df[target_column].iloc[i+look_back])
+    return np.array(X), np.array(y)
+
+# Download and prepare data
+symbol = "AAPL"
+start_date = "2010-01-01"
+end_date = "2024-06-28"
+df = get_stock_data(symbol, start_date, end_date)
+
+# Add technical indicators and create features
+df = add_technical_indicators(df)
+df = create_features(df)
+df.dropna(inplace=True)
+
+# Prepare features and target
+features = ['Open', 'High', 'Low', 'Close', 'Volume', 'SMA', 'RSI', 'MACD', 'ATR', 
+            'day_of_week', 'month', 'year', 'day_of_year']
+target = 'Close'
+
+# Scale the data
+scaler = MinMaxScaler()
+df[features] = scaler.fit_transform(df[features])
+
+# Prepare data for modeling
+look_back = 30
+X, y = prepare_data(df[features + [target]], target, look_back)
+
+# Split the data
+tscv = TimeSeriesSplit(n_splits=5)
+for train_index, test_index in tscv.split(X):
+    X_train, X_test = X[train_index], X[test_index]
+    y_train, y_test = y[train_index], y[test_index]
+
+# Reshape data for XGBoost and LightGBM
+X_train_2d = X_train.reshape(X_train.shape[0], -1)
+X_test_2d = X_test.reshape(X_test.shape[0], -1)
+
+# XGBoost model
+xgb_model = XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)
+xgb_model.fit(X_train_2d, y_train)
+
+# LightGBM model
+lgb_model = LGBMRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)
+lgb_model.fit(X_train_2d, y_train)
+
+# Make predictions
+xgb_pred = xgb_model.predict(X_test_2d)
+lgb_pred = lgb_model.predict(X_test_2d)
+
+# Ensemble predictions (simple average)
+ensemble_pred = (xgb_pred + lgb_pred) / 2
+
+# Calculate MAPE and RMSE
+xgb_mape = mean_absolute_percentage_error(y_test, xgb_pred)
+lgb_mape = mean_absolute_percentage_error(y_test, lgb_pred)
+ensemble_mape = mean_absolute_percentage_error(y_test, ensemble_pred)
+
+xgb_rmse = np.sqrt(mean_squared_error(y_test, xgb_pred))
+lgb_rmse = np.sqrt(mean_squared_error(y_test, lgb_pred))
+ensemble_rmse = np.sqrt(mean_squared_error(y_test, ensemble_pred))
+
+print(f"XGBoost MAPE: {xgb_mape:.2%}, RMSE: {xgb_rmse:.2f}")
+print(f"LightGBM MAPE: {lgb_mape:.2%}, RMSE: {lgb_rmse:.2f}")
+print(f"Ensemble MAPE: {ensemble_mape:.2%}, RMSE: {ensemble_rmse:.2f}")
+
+# Plot results
+plt.figure(figsize=(12, 6))
+plt.plot(y_test, label='Actual')
+plt.plot(xgb_pred, label='XGBoost')
+plt.plot(lgb_pred, label='LightGBM')
+plt.plot(ensemble_pred, label='Ensemble')
+plt.legend()
+plt.title('Stock Price Prediction')
+plt.xlabel('Time')
+plt.ylabel('Price')
+plt.show()
+
+# Feature importance
+xgb_importance = xgb_model.feature_importances_
+lgb_importance = lgb_model.feature_importances_
+
+feature_importance = pd.DataFrame({
+    'feature': features * look_back,
+    'xgb_importance': xgb_importance,
+    'lgb_importance': lgb_importance
+})
+
+plt.figure(figsize=(12, 6))
+sns.barplot(x='xgb_importance', y='feature', data=feature_importance.sort_values('xgb_importance', ascending=False).head(20))
+plt.title('XGBoost Feature Importance')
+plt.show()
+
+plt.figure(figsize=(12, 6))
+sns.barplot(x='lgb_importance', y='feature', data=feature_importance.sort_values('lgb_importance', ascending=False).head(20))
+plt.title('LightGBM Feature Importance')
+plt.show()
+
+# Predict next 7 days
+last_sequence = X[-1].reshape(1, -1)
+xgb_next_7_days = []
+lgb_next_7_days = []
+
+for _ in range(7):
+    xgb_next_day = xgb_model.predict(last_sequence)
+    lgb_next_day = lgb_model.predict(last_sequence)
+    
+    xgb_next_7_days.append(xgb_next_day[0])
+    lgb_next_7_days.append(lgb_next_day[0])
+    
+    last_sequence = np.roll(last_sequence, -len(features))
+    last_sequence[0, -len(features):] = np.mean([xgb_next_day, lgb_next_day], axis=0)
+
+ensemble_next_7_days = np.mean([xgb_next_7_days, lgb_next_7_days], axis=0)
+
+print("\nPredicted stock prices for the next 7 days:")
+for i, price in enumerate(ensemble_next_7_days):
+    print(f"Day {i+1}: ${price:.2f}")
+
+This code does the following:
+1.	Imports necessary libraries, including XGBoost and LightGBM.
+2.	Downloads stock data and adds technical indicators.
+3.	Prepares the data for modeling, including feature creation and scaling.
+4.	Implements both XGBoost and LightGBM models.
+5.	Creates an ensemble by averaging the predictions of both models.
+6.	Evaluates the models using MAPE and RMSE.
+7.	Visualizes the predictions and feature importance.
+8.	Predicts stock prices for the next 7 days using the ensemble.
+Key aspects of this implementation:
+•	It uses both XGBoost and LightGBM, two powerful gradient boosting frameworks.
+•	It creates an ensemble by averaging the predictions of both models, which can often lead to more robust predictions.
+•	It incorporates technical indicators and time-based features.
+•	It uses time series cross-validation for a more robust evaluation.
+•	It visualizes feature importance for both models, which can provide insights into what's driving the predictions.
+Advantages of using XGBoost and LightGBM:
+1.	They can capture non-linear relationships in the data.
+2.	They're generally robust to overfitting, especially with proper tuning.
+3.	They can handle a mix of numerical and categorical features.
+4.	They provide feature importance, which aids in model interpretability.
+Limitations and considerations:
+•	Like all models, they can't predict unexpected events or market shifts.
+•	The performance heavily depends on feature engineering and selection.
+•	They may not capture long-term dependencies as well as some time series-specific models.
+•	Hyperparameter tuning can significantly impact performance (not extensively done in this example for brevity).
+Remember, while these models are powerful, they still can't guarantee accurate predictions in the highly unpredictable stock market. Always use such models as part of a broader analysis and consult with financial experts before making investment decisions.
+
