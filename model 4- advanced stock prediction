@@ -1,0 +1,98 @@
+# Model 4:Here's a basic implementation using Python, focusing on an LSTM model for time series prediction:
+
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+import yfinance as yf
+
+# Function to prepare data for LSTM
+def prepare_data(data, time_steps):
+    X, y = [], []
+    for i in range(len(data) - time_steps):
+        X.append(data[i:(i + time_steps), 0])
+        y.append(data[i + time_steps, 0])
+    return np.array(X), np.array(y)
+
+# Download stock data
+symbol = "AAPL"  # Example: Apple Inc.
+data = yf.download(symbol, start="2010-01-01", end="2024-06-28")
+
+# Prepare the data
+df = data[['Close']].reset_index(drop=True)
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(df)
+
+# Split the data
+train_size = int(len(scaled_data) * 0.8)
+train_data = scaled_data[:train_size]
+test_data = scaled_data[train_size - 60:]  # Include some overlap for initial prediction
+
+# Prepare training data
+time_steps = 60  # Number of previous days to use for prediction
+X_train, y_train = prepare_data(train_data, time_steps)
+X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
+
+# Build the LSTM model
+model = Sequential([
+    LSTM(units=50, return_sequences=True, input_shape=(time_steps, 1)),
+    Dropout(0.2),
+    LSTM(units=50, return_sequences=True),
+    Dropout(0.2),
+    LSTM(units=50),
+    Dropout(0.2),
+    Dense(units=1)
+])
+
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=1)
+
+# Prepare test data
+X_test, y_test = prepare_data(test_data, time_steps)
+X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+
+# Make predictions
+predicted = model.predict(X_test)
+predicted = scaler.inverse_transform(predicted)
+y_test = scaler.inverse_transform(y_test.reshape(-1, 1))
+
+# Calculate MAPE
+mape = np.mean(np.abs((y_test - predicted) / y_test)) * 100
+print(f"Mean Absolute Percentage Error: {mape:.2f}%")
+
+# Predict next 7 days
+last_60_days = scaled_data[-60:]
+X_pred = []
+for i in range(7):
+    X_pred.append(last_60_days[-60:])
+    prediction = model.predict(np.array(X_pred[i]).reshape(1, 60, 1))
+    last_60_days = np.append(last_60_days, prediction)
+
+# Inverse transform predictions
+next_7_days = scaler.inverse_transform(last_60_days[-7:])
+
+print("Predicted stock prices for the next 7 days:")
+for i, price in enumerate(next_7_days):
+    print(f"Day {i+1}: ${price[0]:.2f}")
+This code does the following:
+1.	Imports necessary libraries.
+2.	Defines a function to prepare data for LSTM.
+3.	Downloads historical stock data using yfinance.
+4.	Prepares and scales the data.
+5.	Splits the data into training and testing sets.
+6.	Builds an LSTM model with dropout layers to prevent overfitting.
+7.	Trains the model on historical data.
+8.	Makes predictions on the test set and calculates MAPE.
+9.	Predicts stock prices for the next 7 days.
+Please note that this model:
+•	Only uses closing prices and doesn't incorporate other important factors.
+•	Doesn't account for external events, news, or market sentiment.
+•	May not be accurate or reliable for real-world trading decisions.
+To improve this model, you could:
+•	Incorporate more features (volume, technical indicators, fundamental data).
+•	Use more advanced architectures (e.g., attention mechanisms, transformer models).
+•	Implement ensemble methods combining multiple models.
+•	Include risk assessment and uncertainty quantification.
+Remember, stock prediction is inherently uncertain, and no model can consistently predict future prices accurately. Always consult with financial professionals before making investment decisions.
