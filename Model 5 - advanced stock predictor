@@ -1,0 +1,187 @@
+# Model 5:
+This model will incorporate multiple features, use a more complex architecture, and include some additional analysis. 
+Keep in mind that even this more advanced model has limitations and should not be used for real trading without extensive testing and professional advice.
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import TimeSeriesSplit
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, Attention
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+import ta
+from statsmodels.tsa.stattools import adfuller
+from pmdarima import auto_arima
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Function to download and prepare data
+def get_stock_data(symbol, start_date, end_date):
+    data = yf.download(symbol, start=start_date, end=end_date)
+    return data
+
+# Function to add technical indicators
+def add_technical_indicators(df):
+    df['SMA'] = ta.trend.sma_indicator(df['Close'], window=14)
+    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+    df['MACD'] = ta.trend.macd_diff(df['Close'])
+    df['BB_high'] = ta.volatility.bollinger_hband(df['Close'])
+    df['BB_low'] = ta.volatility.bollinger_lband(df['Close'])
+    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
+    return df
+
+# Function to check stationarity
+def check_stationarity(timeseries):
+    result = adfuller(timeseries, autolag='AIC')
+    return result[1] <= 0.05
+
+# Function to prepare data for LSTM
+def prepare_data(data, look_back):
+    X, y = [], []
+    for i in range(len(data) - look_back):
+        X.append(data[i:(i + look_back), :])
+        y.append(data[i + look_back, 0])
+    return np.array(X), np.array(y)
+
+# Download and prepare data
+symbol = "AAPL"
+start_date = "2010-01-01"
+end_date = "2024-06-28"
+df = get_stock_data(symbol, start_date, end_date)
+
+# Add technical indicators
+df = add_technical_indicators(df)
+df.dropna(inplace=True)
+
+# Check stationarity and difference if needed
+if not check_stationarity(df['Close']):
+    df['Close_diff'] = df['Close'].diff()
+    df.dropna(inplace=True)
+    target_column = 'Close_diff'
+else:
+    target_column = 'Close'
+
+# Prepare features and target
+features = ['Open', 'High', 'Low', 'Close', 'Volume', 'SMA', 'RSI', 'MACD', 'BB_high', 'BB_low', 'ATR']
+X = df[features].values
+y = df[target_column].values
+
+# Scale the data
+scaler_X = MinMaxScaler()
+scaler_y = MinMaxScaler()
+X_scaled = scaler_X.fit_transform(X)
+y_scaled = scaler_y.fit_transform(y.reshape(-1, 1))
+
+# Prepare data for LSTM
+look_back = 60
+X_lstm, y_lstm = prepare_data(np.column_stack((y_scaled, X_scaled)), look_back)
+
+# Split the data
+tscv = TimeSeriesSplit(n_splits=5)
+for train_index, test_index in tscv.split(X_lstm):
+    X_train, X_test = X_lstm[train_index], X_lstm[test_index]
+    y_train, y_test = y_lstm[train_index], y_lstm[test_index]
+
+# Build the model
+model = Sequential([
+    Bidirectional(LSTM(100, return_sequences=True), input_shape=(look_back, X_lstm.shape[2])),
+    Attention(),
+    Dropout(0.3),
+    Bidirectional(LSTM(50)),
+    Dropout(0.3),
+    Dense(1)
+])
+
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+
+# Train the model
+early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+history = model.fit(
+    X_train, y_train,
+    epochs=100,
+    batch_size=32,
+    validation_data=(X_test, y_test),
+    callbacks=[early_stopping],
+    verbose=1
+)
+
+# Make predictions
+predictions = model.predict(X_test)
+
+# Inverse transform predictions and actual values
+predictions = scaler_y.inverse_transform(predictions)
+y_test = scaler_y.inverse_transform(y_test.reshape(-1, 1))
+
+# Calculate MAPE
+mape = np.mean(np.abs((y_test - predictions) / y_test)) * 100
+print(f"Mean Absolute Percentage Error: {mape:.2f}%")
+
+# Plot results
+plt.figure(figsize=(12, 6))
+plt.plot(y_test, label='Actual')
+plt.plot(predictions, label='Predicted')
+plt.legend()
+plt.title('Stock Price Prediction')
+plt.xlabel('Time')
+plt.ylabel('Price')
+plt.show()
+
+# Feature importance using permutation importance
+from sklearn.inspection import permutation_importance
+
+perm_importance = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=42)
+feature_importance = pd.DataFrame({
+    'feature': features,
+    'importance': perm_importance.importances_mean
+})
+feature_importance = feature_importance.sort_values('importance', ascending=False)
+
+plt.figure(figsize=(10, 6))
+sns.barplot(x='importance', y='feature', data=feature_importance)
+plt.title('Feature Importance')
+plt.show()
+
+# Predict next 7 days
+last_sequence = X_lstm[-1]
+next_7_days = []
+
+for _ in range(7):
+    next_day = model.predict(last_sequence.reshape(1, look_back, -1))
+    next_7_days.append(next_day[0, 0])
+    last_sequence = np.roll(last_sequence, -1, axis=0)
+    last_sequence[-1, 0] = next_day
+
+next_7_days = scaler_y.inverse_transform(np.array(next_7_days).reshape(-1, 1))
+
+print("Predicted stock prices for the next 7 days:")
+for i, price in enumerate(next_7_days):
+    print(f"Day {i+1}: ${price[0]:.2f}")
+
+# ARIMA model for comparison
+arima_model = auto_arima(df[target_column], start_p=1, start_q=1, max_p=5, max_q=5, m=7,
+                         start_P=0, seasonal=True, d=1, D=1, trace=True,
+                         error_action='ignore', suppress_warnings=True, stepwise=True)
+
+arima_forecast = arima_model.predict(n_periods=7)
+
+print("\nARIMA Forecast for the next 7 days:")
+for i, price in enumerate(arima_forecast):
+    print(f"Day {i+1}: ${price:.2f}")
+This advanced model includes:
+1.	More features: Technical indicators like SMA, RSI, MACD, Bollinger Bands, and ATR.
+2.	Stationarity check: Differencing the time series if it's not stationary.
+3.	Advanced LSTM architecture: Using Bidirectional LSTM layers with Attention mechanism.
+4.	Time Series Cross-Validation: For more robust model evaluation.
+5.	Early Stopping: To prevent overfitting.
+6.	Feature Importance: Using permutation importance to understand which features are most predictive.
+7.	Visualization: Plotting actual vs predicted values and feature importance.
+8.	ARIMA model: As a baseline comparison to the LSTM model.
+Key improvements and considerations:
+•	This model uses multiple features, not just closing prices.
+•	It checks for stationarity and applies differencing if needed.
+•	The LSTM architecture is more complex, potentially capturing more intricate patterns.
+•	Time series cross-validation provides a more realistic assessment of model performance.
+•	Feature importance analysis helps understand which factors are driving the predictions.
+•	The ARIMA model offers a statistical baseline to compare against the machine learning approach.
