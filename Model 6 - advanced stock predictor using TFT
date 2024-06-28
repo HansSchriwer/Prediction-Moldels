@@ -1,0 +1,171 @@
+# Model 6: TFT model
+A code example using Temporal Fusion Transformers (TFT) for stock price prediction. TFT is a powerful model for interpretable time series forecasting that can handle multiple related time series and incorporate static metadata.
+Here's an implementation using PyTorch Forecasting, which provides a high-level API for TFT:
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import StandardScaler
+from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
+from pytorch_forecasting.metrics import MAE, MAPE, SMAPE
+from pytorch_forecasting.models.temporal_fusion_transformer.tuning import optimize_hyperparameters
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor
+import torch
+import matplotlib.pyplot as plt
+
+# Function to download and prepare data
+def get_stock_data(symbol, start_date, end_date):
+    data = yf.download(symbol, start=start_date, end=end_date)
+    return data
+
+# Function to add technical indicators
+def add_technical_indicators(df):
+    df['SMA'] = df['Close'].rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + df['Close'].diff(1).clip(lower=0).rolling(14).mean() / 
+                              -df['Close'].diff(1).clip(upper=0).rolling(14).mean()))
+    df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+    return df
+
+# Download and prepare data
+symbol = "AAPL"
+start_date = "2010-01-01"
+end_date = "2024-06-28"
+df = get_stock_data(symbol, start_date, end_date)
+
+# Add technical indicators
+df = add_technical_indicators(df)
+df.dropna(inplace=True)
+
+# Prepare features
+df['date'] = df.index
+df['day_of_week'] = df['date'].dt.dayofweek
+df['month'] = df['date'].dt.month
+df['year'] = df['date'].dt.year
+df['day_of_year'] = df['date'].dt.dayofyear
+
+# Create time index
+df['time_idx'] = range(len(df))
+
+# Define target and features
+target = 'Close'
+static_categoricals = []
+static_reals = []
+time_varying_known_reals = ['day_of_week', 'month', 'year', 'day_of_year']
+time_varying_unknown_reals = ['Open', 'High', 'Low', 'Volume', 'SMA', 'RSI', 'MACD']
+
+# Prepare data for TFT
+max_encoder_length = 60
+max_prediction_length = 7
+
+training_cutoff = df['time_idx'].max() - max_prediction_length
+
+training = TimeSeriesDataSet(
+    df[lambda x: x.time_idx <= training_cutoff],
+    time_idx='time_idx',
+    target=target,
+    static_categoricals=static_categoricals,
+    static_reals=static_reals,
+    time_varying_known_reals=time_varying_known_reals,
+    time_varying_unknown_reals=time_varying_unknown_reals,
+    group_ids=['symbol'],
+    max_encoder_length=max_encoder_length,
+    max_prediction_length=max_prediction_length,
+)
+
+validation = TimeSeriesDataSet.from_dataset(training, df, min_prediction_idx=training_cutoff + 1)
+
+# Create data loaders
+batch_size = 64
+train_dataloader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
+val_dataloader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
+
+# Configure the model
+pl.seed_everything(42)
+trainer = pl.Trainer(
+    max_epochs=100,
+    gpus=0,
+    gradient_clip_val=0.1,
+    limit_train_batches=50,
+    callbacks=[EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=10, verbose=False, mode="min"),
+               LearningRateMonitor(logging_interval="epoch")]
+)
+
+tft = TemporalFusionTransformer.from_dataset(
+    training,
+    learning_rate=1e-3,
+    hidden_size=32,
+    attention_head_size=1,
+    dropout=0.1,
+    hidden_continuous_size=16,
+    output_size=7,
+    loss=SMAPE(),
+    log_interval=10,
+    reduce_on_plateau_patience=4
+)
+
+# Fit the model
+trainer.fit(
+    tft,
+    train_dataloaders=train_dataloader,
+    val_dataloaders=val_dataloader,
+)
+
+# Make predictions
+predictions = tft.predict(validation, mode="raw", return_x=True)
+
+# Plot predictions
+fig, ax = plt.subplots(figsize=(10, 6))
+for idx in range(len(predictions.x)):
+    label = "Prediction" if idx == 0 else None
+    ax.plot(predictions.x[idx]["forecast"].numpy().flatten(), label=label, alpha=0.3, color="orange")
+ax.plot(predictions.x[0]["encoder_target"].numpy().flatten(), label="Actual", alpha=0.6, color="blue")
+ax.set_xlabel("Time")
+ax.set_ylabel("Stock Price")
+ax.legend()
+plt.title("TFT Stock Price Predictions")
+plt.show()
+
+# Print feature importance
+importance = tft.interpret_output(predictions.x, reduction="sum")
+for k, v in importance.items():
+    if k not in ["static", "encoder_length"]:
+        print(f"{k}: {v.mean().item():.2f}")
+
+# Predict next 7 days
+last_data = df[df['time_idx'] > training_cutoff]
+encoder_data = df[lambda x: x.time_idx > x.time_idx.max() - max_encoder_length]
+
+last_data['symbol'] = symbol
+encoder_data['symbol'] = symbol
+
+prediction = tft.predict(encoder_data, mode="raw", return_x=True)
+
+print("\nPredicted stock prices for the next 7 days:")
+for i, price in enumerate(prediction.output[0]):
+    print(f"Day {i+1}: ${price.item():.2f}")
+This code does the following:
+1.	Imports necessary libraries, including PyTorch Forecasting for TFT implementation.
+2.	Downloads stock data and adds technical indicators.
+3.	Prepares the data for TFT, including creating time indices and defining feature groups.
+4.	Sets up the TFT model using PyTorch Forecasting's high-level API.
+5.	Trains the model using PyTorch Lightning for efficient training.
+6.	Makes predictions and visualizes them.
+7.	Interprets feature importance.
+8.	Predicts stock prices for the next 7 days.
+Key aspects of this TFT implementation:
+•	It can handle multiple related time series (though we're only using one in this example).
+•	It incorporates both static and time-varying features.
+•	It provides interpretability through attention mechanisms and feature importance.
+•	It can generate probabilistic forecasts (though we're using point forecasts in this example).
+Advantages of TFT:
+1.	Handles multiple related time series effectively.
+2.	Provides interpretable results.
+3.	Can incorporate static metadata along with time-varying features.
+4.	Handles missing data and variable forecast horizons.
+Limitations and considerations:
+•	Like all models, TFT can't predict unexpected events or market shifts.
+•	The model's performance heavily depends on the quality and relevance of input features.
+•	Hyperparameter tuning can significantly impact performance (not included in this example for brevity).
+•	TFT can be computationally intensive, especially for large datasets.
+Remember, while this model is more advanced than simple time series models, it still can't guarantee accurate predictions in the highly unpredictable stock market. Always use such models as part of a broader analysis and consult with financial experts before making investment decisions.
