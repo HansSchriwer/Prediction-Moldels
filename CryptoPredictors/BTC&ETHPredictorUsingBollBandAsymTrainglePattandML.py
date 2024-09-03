@@ -60,7 +60,7 @@ def build_model(input_shape):
     model.compile(optimizer='adam', loss='mean_squared_error')
     return model
 
-# Corrected predict_future_prices function
+# Predicting future prices
 def predict_future_prices(model, data, time_step, future_days=30):
     temp_input = list(data[-time_step:])
     temp_input = np.array(temp_input)
